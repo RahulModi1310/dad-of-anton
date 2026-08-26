@@ -25,8 +25,12 @@ MAX_RETRIES = 3
 RESULTS_PER_PAGE = 25  # screener.in default
 
 # Data points to scrape from company pages
-# Format: (label, selector_type, selector_value, attribute)
-# selector_type: "ratio_list" = from #top-ratios li elements
+# Format: (label, selector_type, selector_value)
+# selector_type: "ratio" = fuzzy match from #top-ratios li elements
+#               "ratio_exact" = exact match from #top-ratios li elements
+#               "quarterly" = latest quarter value from #quarters table
+#               "shareholding" = from #shareholding table
+#               "pros_cons" = from #analysis section
 COMPANY_DATA_POINTS = [
     # Default ratios on company pages
     ("Market Cap", "ratio", "Market Cap"),
@@ -38,11 +42,20 @@ COMPANY_DATA_POINTS = [
     ("ROCE", "ratio", "ROCE"),
     ("ROE", "ratio", "ROE"),
     ("Face Value", "ratio", "Face Value"),
-    # Add more below if you've added custom ratios to your screener.in account
-    # ("EPS (ttm)", "ratio", "EPS"),
-    # ("Debt to Equity", "ratio", "Debt to equity"),
-    # ("Promoter Holding", "ratio", "Promoter Holding"),
-    # ("EV/EBITDA", "ratio", "EV/EBITDA"),
+    # Quarterly results (latest quarter)
+    ("Sales (Latest Qtr)", "quarterly", "Sales"),
+    ("Operating Profit (Latest Qtr)", "quarterly", "Operating Profit"),
+    ("Net Profit (Latest Qtr)", "quarterly", "Net Profit"),
+    # Shareholding pattern
+    ("Promoter Holding", "shareholding", "Promoter"),
+    ("FII Holding", "shareholding", "FII"),
+    ("DII Holding", "shareholding", "DII"),
+    ("Public Holding", "shareholding", "Public"),
+    ("Government Holding", "shareholding", "Government"),
+    ("Others Holding", "shareholding", "Others"),
+    # Pros/Cons
+    ("Pros", "pros_cons", "pros"),
+    ("Cons", "pros_cons", "cons"),
 ]
 
 # Headers for requests
