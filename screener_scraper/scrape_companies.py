@@ -21,6 +21,28 @@ from utils import get_page
 
 logger = logging.getLogger(__name__)
 
+# Ratios that should be numeric (used for validation)
+NUMERIC_RATIOS = {
+    "Market Cap", "Current Price", "Stock P/E", "Book Value",
+    "Dividend Yield", "ROCE", "ROE", "Face Value",
+    "Sales (Latest Qtr)", "Operating Profit (Latest Qtr)", "Net Profit (Latest Qtr)",
+    "Promoter Holding", "FII Holding", "DII Holding", "Public Holding",
+}
+
+
+def is_numeric_value(value: str) -> bool:
+    """Check if a string looks like a numeric value (with commas, %, etc)."""
+    if not value:
+        return True  # Empty is ok (missing data)
+    cleaned = value.replace(",", "").replace("%", "").replace("₹", "").replace("Cr.", "").strip()
+    if cleaned in ("", "-", "N/A"):
+        return True
+    try:
+        float(cleaned)
+        return True
+    except ValueError:
+        return False
+
 
 def extract_ratio_value(soup: BeautifulSoup, ratio_name: str) -> str:
     """Extract a specific ratio value from the #top-ratios section."""
@@ -182,6 +204,12 @@ def scrape_company(ticker: str, url: str) -> dict | None:
     data["Ticker"] = ticker
     data["URL"] = url
     data["scraped_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    # Validate numeric fields
+    for label in data:
+        if label in NUMERIC_RATIOS and data[label] and not is_numeric_value(data[label]):
+            logger.warning("    Non-numeric value for %s: '%s'", label, data[label])
+
     return data
 
 
