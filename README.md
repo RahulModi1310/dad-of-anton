@@ -85,7 +85,6 @@ npm run dev
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | /api/v1/health | Health check |
-| GET | /api/v1/ping | Ping test |
 
 ## Tech Stack
 
