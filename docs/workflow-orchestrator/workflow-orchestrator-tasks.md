@@ -60,9 +60,9 @@ Create the `backend/app/workflow/workflow_task.py` file with the abstract base c
 - `name` class attribute (str) for human-readable task name
 
 **Acceptance Criteria:**
-- [ ] File created at `backend/app/workflow/workflow_task.py`
-- [ ] Class is abstract (cannot be instantiated directly)
-- [ ] `run()` method is async and raises NotImplementedError if not overridden
+- [x] File created at `backend/app/workflow/workflow_task.py`
+- [x] Class is abstract (cannot be instantiated directly)
+- [x] `run()` method is async and raises NotImplementedError if not overridden
 
 ---
 
@@ -76,10 +76,10 @@ Create the `backend/app/workflow/workflow_config.py` file with the dataclass for
 - `WORKFLOWS` dictionary to register workflow configs by name
 
 **Acceptance Criteria:**
-- [ ] File created at `backend/app/workflow/workflow_config.py`
-- [ ] `BaseWorkflowConfig` is a dataclass
-- [ ] `WORKFLOWS` is a module-level dict
-- [ ] Type hints are correct
+- [x] File created at `backend/app/workflow/workflow_config.py`
+- [x] `BaseWorkflowConfig` is a dataclass
+- [x] `WORKFLOWS` is a module-level dict
+- [x] Type hints are correct
 
 ---
 
