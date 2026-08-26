@@ -11,27 +11,15 @@ import sys
 import csv
 import re
 import time
+import logging
 import argparse
-import requests
-from bs4 import BeautifulSoup, Tag
-from config import (
-    BASE_URL, OUTPUT_DIR, REQUEST_DELAY, REQUEST_TIMEOUT,
-    MAX_RETRIES, HEADERS, COMPANY_DATA_POINTS
-)
+from datetime import datetime, timezone
+from bs4 import BeautifulSoup
+from tqdm import tqdm
+from config import BASE_URL, OUTPUT_DIR, REQUEST_DELAY, COMPANY_DATA_POINTS
+from utils import get_page
 
-
-def get_page(url: str) -> BeautifulSoup | None:
-    """Fetch a page and return BeautifulSoup object."""
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-            response.raise_for_status()
-            return BeautifulSoup(response.text, "html.parser")
-        except requests.RequestException as e:
-            print(f"    Attempt {attempt + 1} failed: {e}")
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(REQUEST_DELAY * (attempt + 1))
-    return None
+logger = logging.getLogger(__name__)
 
 
 def extract_ratio_value(soup: BeautifulSoup, ratio_name: str) -> str:
@@ -77,17 +65,91 @@ def extract_ratio_value_by_exact(soup: BeautifulSoup, ratio_name: str) -> str:
     return ""
 
 
+def extract_quarterly_value(soup: BeautifulSoup, row_name: str) -> str:
+    """Extract the latest quarter value from #quarters table."""
+    quarters_table = soup.select_one("#quarters table")
+    if not quarters_table:
+        return ""
+
+    rows = quarters_table.select("tr")
+    for row in rows:
+        cells = row.select("td")
+        if not cells:
+            continue
+        label_cell = cells[0]
+        if row_name.lower() in label_cell.get_text(strip=True).lower():
+            # Get the last non-empty cell (latest quarter)
+            for cell in reversed(cells[1:]):
+                text = cell.get_text(strip=True)
+                if text:
+                    return text
+
+    return ""
+
+
+def extract_shareholding(soup: BeautifulSoup, category: str) -> str:
+    """Extract shareholding percentage from #shareholding table."""
+    shareholding_table = soup.select_one("#shareholding table")
+    if not shareholding_table:
+        return ""
+
+    rows = shareholding_table.select("tr")
+    for row in rows:
+        cells = row.select("td")
+        if not cells:
+            continue
+        label_cell = cells[0]
+        if category.lower() in label_cell.get_text(strip=True).lower():
+            # Get the last cell (latest quarter)
+            if len(cells) > 1:
+                return cells[-1].get_text(strip=True)
+
+    return ""
+
+
+def extract_pros_cons(soup: BeautifulSoup) -> tuple[str, str]:
+    """Extract pros and cons from #analysis section."""
+    pros = []
+    cons = []
+
+    pros_section = soup.select_one(".pros ul")
+    if pros_section:
+        for li in pros_section.select("li"):
+            text = li.get_text(strip=True)
+            if text:
+                pros.append(text)
+
+    cons_section = soup.select_one(".cons ul")
+    if cons_section:
+        for li in cons_section.select("li"):
+            text = li.get_text(strip=True)
+            if text:
+                cons.append(text)
+
+    return " | ".join(pros), " | ".join(cons)
+
+
 def extract_company_data(soup: BeautifulSoup) -> dict:
     """Extract all configured data points from a company page."""
     data = {}
 
+    # Get pros and cons once
+    pros_text, cons_text = extract_pros_cons(soup)
+
     for label, selector_type, selector_value in COMPANY_DATA_POINTS:
         if selector_type == "ratio":
-            value = extract_ratio_value(soup, selector_value)
-            data[label] = value
+            data[label] = extract_ratio_value(soup, selector_value)
         elif selector_type == "ratio_exact":
-            value = extract_ratio_value_by_exact(soup, selector_value)
-            data[label] = value
+            data[label] = extract_ratio_value_by_exact(soup, selector_value)
+        elif selector_type == "quarterly":
+            data[label] = extract_quarterly_value(soup, selector_value)
+        elif selector_type == "shareholding":
+            data[label] = extract_shareholding(soup, selector_value)
+        elif selector_type == "pros_cons":
+            if selector_value == "pros":
+                data[label] = pros_text
+            elif selector_value == "cons":
+                data[label] = cons_text
 
     # Also extract company name from page title
     title = soup.select_one("h1")
@@ -105,17 +167,21 @@ def extract_company_data(soup: BeautifulSoup) -> dict:
 
 def scrape_company(ticker: str, url: str) -> dict | None:
     """Scrape a single company page."""
-    print(f"    Scraping {ticker}...", end=" ")
     soup = get_page(url)
 
     if not soup:
-        print("FAILED")
+        logger.error("    FAILED to scrape %s", ticker)
+        # Log failed ticker for retry
+        failed_path = os.path.join(OUTPUT_DIR, "_failed_tickers.csv")
+        with open(failed_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([ticker, url, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")])
         return None
 
     data = extract_company_data(soup)
     data["Ticker"] = ticker
     data["URL"] = url
-    print("OK")
+    data["scraped_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     return data
 
 
@@ -129,26 +195,60 @@ def load_companies_from_csv(csv_path: str) -> list[dict]:
     return companies
 
 
-def scrape_index_companies(csv_path: str) -> list[dict]:
-    """Scrape all companies from a CSV file."""
+def load_scraped_tickers(index_name: str) -> set[str]:
+    """Load tickers that have already been scraped from existing output."""
+    filepath = os.path.join(OUTPUT_DIR, f"{index_name}_data.csv")
+    if not os.path.exists(filepath):
+        return set()
+
+    tickers = set()
+    with open(filepath, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            tickers.add(row.get("Ticker", ""))
+    return tickers
+
+
+def scrape_index_companies(csv_path: str, index_name: str, seen_tickers: set[str] | None = None) -> list[dict]:
+    """Scrape all companies from a CSV file, skipping already-scraped ones."""
     companies = load_companies_from_csv(csv_path)
-    all_data = []
+    scraped_tickers = load_scraped_tickers(index_name)
 
-    print(f"\n  Found {len(companies)} companies to scrape")
+    # Merge with seen_tickers for cross-index deduplication
+    if seen_tickers:
+        scraped_tickers = scraped_tickers | seen_tickers
 
-    for i, company in enumerate(companies, 1):
+    # Load existing data to append to
+    existing_data = []
+    if scraped_tickers:
+        filepath = os.path.join(OUTPUT_DIR, f"{index_name}_data.csv")
+        if os.path.exists(filepath):
+            with open(filepath, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                existing_data = list(reader)
+        logger.info("  Resuming: %d already scraped, skipping them", len(scraped_tickers))
+
+    remaining = [c for c in companies if c["ticker"] not in scraped_tickers]
+    logger.info("  Found %d total, %d remaining to scrape", len(companies), len(remaining))
+
+    all_data = existing_data.copy()
+    for i, company in enumerate(tqdm(remaining, desc=f"  {index_name}", unit="stock"), 1):
         ticker = company["ticker"]
         url = company["url"]
 
-        print(f"  [{i}/{len(companies)}]", end="")
         data = scrape_company(ticker, url)
 
         if data:
             all_data.append(data)
 
         # Rate limiting
-        if i < len(companies):
+        if i < len(remaining):
             time.sleep(REQUEST_DELAY)
+
+        # Checkpoint every 10 companies
+        if i % 10 == 0 and all_data:
+            save_company_data(all_data, index_name)
+            logger.debug("    [checkpoint saved]")
 
     return all_data
 
@@ -159,7 +259,7 @@ def save_company_data(data: list[dict], index_name: str):
     filepath = os.path.join(OUTPUT_DIR, f"{index_name}_data.csv")
 
     if not data:
-        print(f"  No data to save for {index_name}")
+        logger.info("  No data to save for %s", index_name)
         return None
 
     # Get all unique keys across all records
@@ -173,7 +273,7 @@ def save_company_data(data: list[dict], index_name: str):
         writer.writeheader()
         writer.writerows(data)
 
-    print(f"  Saved to: {filepath}")
+    logger.info("  Saved to: %s", filepath)
     return filepath
 
 
@@ -190,43 +290,71 @@ def find_index_csv_files() -> dict[str, str]:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Scrape company details from screener.in")
-    parser.add_argument("index", nargs="?", help="Index name to scrape (e.g. SMALLCAP50). If omitted, scrapes all.")
+    parser.add_argument("index", nargs="*", help="Index name(s) to scrape (e.g. SMALLCAP50 NIFTY). If omitted, scrapes all.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
+    parser.add_argument("-f", "--force", action="store_true", help="Re-scrape even if output file exists")
     args = parser.parse_args()
 
-    print("Screener.in Company Scraper - Script 2")
-    print("=" * 60)
+    # Configure logging
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(message)s",
+    )
+
+    logger.info("Screener.in Company Scraper - Script 2")
+    logger.info("=" * 60)
+
+    start_time = time.time()
 
     # Find index CSV files
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     index_files = find_index_csv_files()
 
     if not index_files:
-        print(f"\nNo index CSV files found in {OUTPUT_DIR}")
-        print("Please run Script 1 (scrape_indexes.py) first.")
+        logger.info("\nNo index CSV files found in %s", OUTPUT_DIR)
+        logger.info("Please run Script 1 (scrape_indexes.py) first.")
         return
 
-    # Filter if specific index requested
+    # Filter if specific indexes requested
     if args.index:
-        upper = args.index.upper()
-        if upper in index_files:
-            index_files = {upper: index_files[upper]}
-        elif args.index in index_files:
-            index_files = {args.index: index_files[args.index]}
-        else:
-            print(f"\nError: No CSV file found for index '{args.index}'")
-            print(f"Available: {list(index_files.keys())}")
-            print("Run Script 1 first for this index.")
-            sys.exit(1)
+        filtered = {}
+        for name in args.index:
+            upper = name.upper()
+            if upper in index_files:
+                filtered[upper] = index_files[upper]
+            elif name in index_files:
+                filtered[name] = index_files[name]
+            else:
+                logger.info("\nError: No CSV file found for index '%s'", name)
+                logger.info("Available: %s", list(index_files.keys()))
+                logger.info("Run Script 1 first for this index.")
+                sys.exit(1)
+        index_files = filtered
 
-    print(f"Found {len(index_files)} index files: {list(index_files.keys())}")
+    logger.info("Found %d index files: %s", len(index_files), list(index_files.keys()))
 
     results = {}
+    seen_tickers = set()
     for index_name, csv_path in index_files.items():
-        print(f"\n{'='*60}")
-        print(f"Processing index: {index_name}")
-        print(f"{'='*60}")
+        logger.info("=" * 60)
+        logger.info("Processing index: %s", index_name)
+        logger.info("=" * 60)
 
-        data = scrape_index_companies(csv_path)
+        # Delete existing output if --force
+        if args.force:
+            existing = os.path.join(OUTPUT_DIR, f"{index_name}_data.csv")
+            if os.path.exists(existing):
+                os.remove(existing)
+                logger.info("  Deleted existing output for re-scrape")
+
+        data = scrape_index_companies(csv_path, index_name, seen_tickers)
+
+        # Track tickers seen across indexes for deduplication
+        for d in data:
+            ticker = d.get("Ticker", "")
+            if ticker:
+                seen_tickers.add(ticker)
+
         if data:
             filepath = save_company_data(data, index_name)
             results[index_name] = {
@@ -234,12 +362,21 @@ def main():
                 "file": filepath,
             }
 
+    elapsed = time.time() - start_time
+
     # Summary
-    print(f"\n{'='*60}")
-    print("SCRAPE COMPLETE")
-    print(f"{'='*60}")
+    logger.info("=" * 60)
+    logger.info("SCRAPE COMPLETE")
+    logger.info("=" * 60)
+    total_companies = 0
     for index_name, info in results.items():
-        print(f"  {index_name}: {info['count']} companies -> {info['file']}")
+        logger.info("  %s: %d companies -> %s", index_name, info["count"], info["file"])
+        total_companies += info["count"]
+    logger.info("-" * 60)
+    logger.info("  Total: %d companies scraped", total_companies)
+    logger.info("  Time taken: %.1f seconds", elapsed)
+    if total_companies > 0:
+        logger.info("  Avg time per company: %.2f seconds", elapsed / total_companies)
 
     return results
 

@@ -10,24 +10,13 @@ import sys
 import csv
 import re
 import time
+import logging
 import argparse
-import requests
 from bs4 import BeautifulSoup
-from config import BASE_URL, INDEXES, OUTPUT_DIR, REQUEST_DELAY, REQUEST_TIMEOUT, MAX_RETRIES, HEADERS, RESULTS_PER_PAGE
+from config import BASE_URL, INDEXES, OUTPUT_DIR, REQUEST_DELAY
+from utils import get_page
 
-
-def get_page(url: str) -> BeautifulSoup | None:
-    """Fetch a page and return BeautifulSoup object."""
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-            response.raise_for_status()
-            return BeautifulSoup(response.text, "html.parser")
-        except requests.RequestException as e:
-            print(f"  Attempt {attempt + 1} failed for {url}: {e}")
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(REQUEST_DELAY * (attempt + 1))
-    return None
+logger = logging.getLogger(__name__)
 
 
 def get_total_pages(soup: BeautifulSoup) -> int:
@@ -85,9 +74,9 @@ def extract_companies(soup: BeautifulSoup) -> list[dict]:
 
 def scrape_index(index_name: str, index_slug: str) -> list[dict]:
     """Scrape all companies from an index, handling pagination."""
-    print(f"\n{'='*60}")
-    print(f"Scraping index: {index_name}")
-    print(f"{'='*60}")
+    logger.info("=" * 60)
+    logger.info("Scraping index: %s", index_name)
+    logger.info("=" * 60)
 
     all_companies = []
     page = 1
@@ -100,22 +89,22 @@ def scrape_index(index_name: str, index_slug: str) -> list[dict]:
         else:
             url = f"{BASE_URL}/company/{index_slug}/?page={page}"
 
-        print(f"  Fetching page {page}...", end=" ")
+        logger.info("  Fetching page %d...", page)
         soup = get_page(url)
 
         if not soup:
-            print("FAILED")
+            logger.error("  FAILED to fetch page %d", page)
             break
 
         # Get total pages on first page
         if total_pages is None:
             total_pages = get_total_pages(soup)
-            print(f"(total pages: {total_pages})", end=" ")
+            logger.info("  (total pages: %d)", total_pages)
 
         # Extract companies from this page
         companies = extract_companies(soup)
         all_companies.extend(companies)
-        print(f"found {len(companies)} companies")
+        logger.info("  Found %d companies on page %d", len(companies), page)
 
         # Check if we've reached the last page
         if page >= total_pages:
@@ -124,7 +113,7 @@ def scrape_index(index_name: str, index_slug: str) -> list[dict]:
         page += 1
         time.sleep(REQUEST_DELAY)
 
-    print(f"  Total companies scraped: {len(all_companies)}")
+    logger.info("  Total companies scraped: %d", len(all_companies))
     return all_companies
 
 
@@ -138,30 +127,39 @@ def save_to_csv(companies: list[dict], index_name: str):
         writer.writeheader()
         writer.writerows(companies)
 
-    print(f"  Saved to: {filepath}")
+    logger.info("  Saved to: %s", filepath)
     return filepath
 
 
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Scrape company endpoints from screener.in indexes")
-    parser.add_argument("index", nargs="?", help="Index name to scrape (e.g. SMALLCAP50). If omitted, scrapes all.")
+    parser.add_argument("index", nargs="*", help="Index name(s) to scrape (e.g. SMALLCAP50 NIFTY). If omitted, scrapes all.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
 
-    # Filter indexes if specific one requested
+    # Configure logging
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(message)s",
+    )
+
+    # Filter indexes if specific ones requested
     if args.index:
-        if args.index in INDEXES:
-            indexes = {args.index: INDEXES[args.index]}
-        else:
-            # Use the argument directly as the URL slug
-            indexes = {args.index.upper(): args.index}
+        indexes = {}
+        for name in args.index:
+            if name in INDEXES:
+                indexes[name] = INDEXES[name]
+            else:
+                # Use the argument directly as the URL slug
+                indexes[name.upper()] = name
     else:
         indexes = INDEXES
 
-    print("Screener.in Index Scraper - Script 1")
-    print("=" * 60)
-    print(f"Indexes to scrape: {list(indexes.keys())}")
-    print(f"Output directory: {OUTPUT_DIR}")
+    logger.info("Screener.in Index Scraper - Script 1")
+    logger.info("=" * 60)
+    logger.info("Indexes to scrape: %s", list(indexes.keys()))
+    logger.info("Output directory: %s", OUTPUT_DIR)
 
     results = {}
     for index_name, index_slug in indexes.items():
@@ -174,11 +172,11 @@ def main():
             }
 
     # Summary
-    print(f"\n{'='*60}")
-    print("SCRAPE COMPLETE")
-    print(f"{'='*60}")
+    logger.info("=" * 60)
+    logger.info("SCRAPE COMPLETE")
+    logger.info("=" * 60)
     for index_name, info in results.items():
-        print(f"  {index_name}: {info['count']} companies -> {info['file']}")
+        logger.info("  %s: %d companies -> %s", index_name, info["count"], info["file"])
 
     return results
 
