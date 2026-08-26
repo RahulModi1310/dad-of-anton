@@ -19,6 +19,7 @@
 
 - NEVER commit unless explicitly asked
 - NEVER push unless explicitly asked
+- NEVER run `git add`, `git commit`, or `git push` without explicit user permission
 - ALWAYS check `git status` before committing
 - Remove `__pycache__/` and `output/` from staging before committing
 
